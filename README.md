@@ -15,7 +15,8 @@ MF Announcement #6
 
 `-v` also prints the signers' fingerprints.
 
-The text is printed only if all checks pass. Otherwise `mfverify` prints why and exits with status 1.
+The text is printed only if all checks pass. Otherwise `mfverify` prints why and exits with status 1. A network
+error is reported as such ("could not be verified ... try again"), not as a failed verification.
 
 ## Install
 
@@ -36,6 +37,8 @@ chmod +x mfverify
   certificates.
 - The first line of the text is `MF Announcement #N` (or `Announcement #N`, as in #3) for the requested `N`. This
   stops a validly signed old announcement from being passed off as another one.
+- Each key is checked on its own, so a key file that cannot be read or downloaded only keeps that key from
+  counting.
 - It notes when the announcement is not the latest one. The latest is found by probing `announcements/mf-N`; a
   network error while probing stops `mfverify` instead of being taken for "no newer announcement".
 

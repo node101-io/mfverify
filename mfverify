@@ -92,18 +92,35 @@ tr -d ' \t\r\n' < keys.json | tr '}' '\n' | grep '"status":"active"' |
   sed -n 's/.*"\([A-Za-z0-9_-]*\)":{.*"fingerprint":"\([0-9A-F]\{40\}\)".*/\2 \1/p' | tr - _ > active
 [ -s active ] || die "cannot read the authorized keys from $KEYS_JSON"
 
-# A missing key file only means that key cannot count.
-for name in $(cut -d ' ' -f 2 active); do
-  curl -fsS "$BASE/keys/$name.pub.asc" >> keys.asc 2>/dev/null || :
+for name in $(cut -d " " -f 2 active | sort -u); do
+  fetch "$BASE/keys/$name.pub.asc" "$name.asc" > "$name.status" &
 done
+wait
 
-# sqv checks signature, key and certificate expiry and revocation, and prints the
-# fingerprint of each certificate with a valid signature. Keep the active ones, once each.
-sqv --keyring keys.asc --signatures 2 announcement.sig announcement.txt > valid ||
-  die "announcement #$N FAILED verification. Do not act on it."
-signers=$(awk 'NR == FNR { name[$1] = $2; next } $1 in name && !seen[$1]++ { print $1, name[$1] }' active valid | sort -k 2)
-[ "$(echo "$signers" | grep -c .)" -ge 2 ] ||
+# Each key is checked on its own, so that a key file sqv cannot read only
+# keeps that key from counting. sqv checks signature, key and certificate
+# expiry and revocation, and prints the fingerprint of each certificate with
+# a valid signature; it must be the one the docs list for that name.
+# A missing key file only means that key cannot count.
+: > valid
+unavailable=
+while read -r fpr name; do
+  case $(cat "$name.status") in
+    ok) ;;
+    missing) continue ;;
+    *) unavailable="$unavailable $name"; continue ;;
+  esac
+  if sqv --keyring "$name.asc" announcement.sig announcement.txt > "$name.out" 2> "$name.sqv" &&
+    grep -qx "$fpr" "$name.out"; then
+    echo "$fpr $name" >> valid
+  fi
+done < active
+
+signers=$(sort -u -k 1,1 valid | sort -k 2)
+if [ "$(echo "$signers" | grep -c .)" -lt 2 ]; then
+  [ -z "$unavailable" ] || die "announcement #$N could not be verified: the key files of$unavailable could not be downloaded. Check your network and try again; do not act on it until it verifies."
   die "announcement #$N is not signed by 2 distinct authorized keys. Do not act on it."
+fi
 
 header=$(head -n 1 announcement.txt | tr -d '\r')
 case $header in
