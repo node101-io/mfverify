@@ -15,12 +15,20 @@ BASE=${MFVERIFY_BASE:-https://raw.githubusercontent.com/monad-crypto/mf-nodeops-
 KEYS_JSON=${MFVERIFY_KEYS_JSON:-https://docs.monad.xyz/node-ops/gpg-keys.json}
 
 die() { echo "mfverify: $*" >&2; exit 1; }
+usage() { echo "usage: mfverify [-v] [N]" >&2; exit 2; }
 exists() { curl -fsI -o /dev/null "$BASE/announcements/mf-$1/announcement.txt" 2>/dev/null; }
 
-command -v sqv >/dev/null || die "sqv not found (apt install sqv, or brew install sequoia-sqv)"
-
 verbose=
-[ "${1:-}" != -v ] || { verbose=1; shift; }
+while getopts vh o; do
+  case $o in v) verbose=1 ;; *) usage ;; esac
+done
+shift $((OPTIND - 1))
+[ $# -le 1 ] || usage
+case ${1-0} in '' | *[!0-9]* | 0?*) usage ;; esac
+
+command -v sqv >/dev/null || die "sqv not found (apt install sqv, or brew install sequoia-sqv)"
+[ -z "${MFVERIFY_BASE:-}${MFVERIFY_KEYS_JSON:-}" ] ||
+  echo "mfverify: warning: MFVERIFY_BASE or MFVERIFY_KEYS_JSON is set; using $BASE and $KEYS_JSON" >&2
 
 if [ $# -eq 0 ]; then
   # Announcements are numbered from 0 without gaps: double past the last, then bisect.
@@ -34,10 +42,10 @@ if [ $# -eq 0 ]; then
 else
   N=$1
 fi
-case $N in '' | *[!0-9]*) die "usage: mfverify [-v] [N]" ;; esac
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
+trap 'exit 1' HUP INT TERM
 cd "$tmp"
 
 for f in txt sig; do
