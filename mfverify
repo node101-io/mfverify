@@ -16,7 +16,22 @@ KEYS_JSON=${MFVERIFY_KEYS_JSON:-https://docs.monad.xyz/node-ops/gpg-keys.json}
 
 die() { echo "mfverify: $*" >&2; exit 1; }
 usage() { echo "usage: mfverify [-v] [N]"; exit "$1"; }
-exists() { curl -fsI -o /dev/null "$BASE/announcements/mf-$1/announcement.txt" 2>/dev/null; }
+
+# Downloads $1 to $2. Fails if there is no such file (HTTP 404, or no such
+# file:// file) and dies on any other error, so that a network error is never
+# taken for a missing file.
+get() {
+  code=$(curl -sS --max-time 60 --retry 2 -o "$2" -w '%{http_code}' "$1" 2> err) && rc=0 || rc=$?
+  case $rc:$code in
+    0:200 | 0:000) ;;
+    0:404 | 37:*) return 1 ;;
+    # docs.monad.xyz answers bursts of requests with a bot challenge for a while.
+    0:403) die "cannot download $1 (HTTP 403). docs.monad.xyz blocks bursts of requests; try again in a few minutes." ;;
+    0:*) die "cannot download $1 (HTTP $code)" ;;
+    *) die "cannot download $1 ($(sed -n '$s/^curl: ([0-9]*) //p' err))" ;;
+  esac
+}
+exists() { get "$BASE/announcements/mf-$1/announcement.txt" probe; }
 
 verbose=
 while getopts vh o; do
@@ -29,6 +44,11 @@ case ${1-0} in '' | *[!0-9]* | 0?*) usage 2 >&2 ;; esac
 command -v sqv >/dev/null || die "sqv not found (apt install sqv, or brew install sequoia-sqv)"
 [ -z "${MFVERIFY_BASE:-}${MFVERIFY_KEYS_JSON:-}" ] ||
   echo "mfverify: warning: MFVERIFY_BASE or MFVERIFY_KEYS_JSON is set; using $BASE and $KEYS_JSON" >&2
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+trap 'exit 1' HUP INT TERM
+cd "$tmp"
 
 if [ $# -eq 0 ]; then
   # Announcements are numbered from 0 without gaps: double past the last, then bisect.
@@ -43,20 +63,10 @@ else
   N=$1
 fi
 
-tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
-trap 'exit 1' HUP INT TERM
-cd "$tmp"
-
 for f in txt sig; do
-  curl -fsS -o announcement.$f "$BASE/announcements/mf-$N/announcement.$f" || die "cannot download announcement #$N"
+  get "$BASE/announcements/mf-$N/announcement.$f" announcement.$f || die "announcement #$N does not exist"
 done
-
-if ! curl -fsS -o keys.json "$KEYS_JSON" 2> err; then
-  # docs.monad.xyz answers bursts of requests with a bot challenge for a while.
-  grep -q 'error: 403' err && die "docs.monad.xyz is blocking automated requests right now (HTTP 403). Try again in a few minutes."
-  die "cannot download $KEYS_JSON: $(cat err)"
-fi
+get "$KEYS_JSON" keys.json || die "cannot download $KEYS_JSON (not found)"
 
 # Active signers as "FINGERPRINT name" lines; "signer-1" has the file keys/signer_1.pub.asc.
 # The JSON is flat, so each "}" ends one signer. Names are restricted so that
@@ -67,7 +77,7 @@ tr -d ' \t\r\n' < keys.json | tr '}' '\n' | grep '"status":"active"' |
 
 # A missing key file only means that key cannot count.
 for name in $(cut -d ' ' -f 2 active); do
-  curl -fsS "$BASE/keys/$name.pub.asc" >> keys.asc 2>/dev/null || :
+  ! get "$BASE/keys/$name.pub.asc" key || cat key >> keys.asc
 done
 
 # sqv checks signature, key and certificate expiry and revocation, and prints the
@@ -84,9 +94,13 @@ case $header in
   *) die "announcement #$N is signed but its header is \"$header\". Do not act on it." ;;
 esac
 
+# Checked before anything is printed, so that a network error does not cut the output short.
+newer=
+! exists $((N + 1)) || newer="Note: this is not the latest announcement; #$((N + 1)) exists."
+
 echo "✓ Verified #$N ($(echo "$signers" | awk '{ printf "%s%s", s, $2; s = ", " }'))"
 [ -z "$verbose" ] || echo "$signers" | sed 's/^/  /'
-! exists $((N + 1)) || echo "Note: this is not the latest announcement; #$((N + 1)) exists."
+[ -z "$newer" ] || echo "$newer"
 echo
 # Drop control characters (terminal escapes) other than tab and newline.
 LC_ALL=C tr -d '\000-\010\013-\037\177' < announcement.txt
