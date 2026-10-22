@@ -4,6 +4,8 @@ set -u
 cd "$(dirname "$0")"
 
 t=$(mktemp -d)
+# Set before the trap, so that it only ever stops the tests' own gpg-agent.
+export GNUPGHOME="$t/gnupg"; mkdir -m 700 "$GNUPGHOME"
 trap 'gpgconf --kill gpg-agent 2>/dev/null; rm -rf "$t"' EXIT
 fail=0
 pass() { echo "ok    $1"; }
@@ -81,7 +83,6 @@ case_dir 6; sed 's/"active"/"revoked"/' "$t/real/gpg-keys.json" > "$t/src/gpg-ke
 rejects "signers not active in the docs" 6
 
 # A new key, signing together with signer_2.
-export GNUPGHOME="$t/gnupg"; mkdir -m 700 "$GNUPGHOME"
 gpg -q --batch --passphrase '' --quick-gen-key new ed25519 sign never 2>/dev/null
 gpg -q --batch --detach-sign -o "$t/new.sig" "$t/real/mf-6/announcement.txt"
 fpr=$(gpg --with-colons --list-keys new 2>/dev/null | awk -F: '$1 == "fpr" { print $10; exit }')
