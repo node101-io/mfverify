@@ -15,16 +15,16 @@ BASE=${MFVERIFY_BASE:-https://raw.githubusercontent.com/monad-crypto/mf-nodeops-
 KEYS_JSON=${MFVERIFY_KEYS_JSON:-https://docs.monad.xyz/node-ops/gpg-keys.json}
 
 die() { echo "mfverify: $*" >&2; exit 1; }
-usage() { echo "usage: mfverify [-v] [N]" >&2; exit 2; }
+usage() { echo "usage: mfverify [-v] [N]"; exit "$1"; }
 exists() { curl -fsI -o /dev/null "$BASE/announcements/mf-$1/announcement.txt" 2>/dev/null; }
 
 verbose=
 while getopts vh o; do
-  case $o in v) verbose=1 ;; *) usage ;; esac
+  case $o in v) verbose=1 ;; h) usage 0 ;; *) usage 2 >&2 ;; esac
 done
 shift $((OPTIND - 1))
-[ $# -le 1 ] || usage
-case ${1-0} in '' | *[!0-9]* | 0?*) usage ;; esac
+[ $# -le 1 ] || usage 2 >&2
+case ${1-0} in '' | *[!0-9]* | 0?*) usage 2 >&2 ;; esac
 
 command -v sqv >/dev/null || die "sqv not found (apt install sqv, or brew install sequoia-sqv)"
 [ -z "${MFVERIFY_BASE:-}${MFVERIFY_KEYS_JSON:-}" ] ||
