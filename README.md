@@ -6,14 +6,27 @@ the manual steps (import the keys, compare fingerprints, run `gpg --verify`, cou
 
 ```console
 $ mfverify        # the latest announcement
-$ mfverify 6      # announcement #6
+Finding the latest announcement... #6
+Downloading announcement #6... done
+Downloading the list of authorized keys from the docs... 5 active
+Downloading their key files from GitHub... done
+Verifying the signatures with sqv:
+  signer_1    ✓ valid signature
+  signer_2    ✓ valid signature
+  signer_3    – did not sign
+  signer_4    – did not sign
+  signer_6    – did not sign
+Checking the header... "MF Announcement #6"
+
 ✓ Verified #6 (signer_1, signer_2)
 
 MF Announcement #6
 ...
+$ mfverify 6      # announcement #6
 ```
 
-`-v` also prints the signers' fingerprints.
+Progress goes to stderr and the verified announcement to stdout. `-q` hides the progress, `-v` adds each
+key's fingerprint to it.
 
 The text is printed only if all checks pass. Otherwise `mfverify` prints why and exits with status 1. A network
 error is reported as such ("could not be verified ... try again"), not as a failed verification.
@@ -65,13 +78,15 @@ then says so and accepts nothing; try again later.
 ./test.sh    # needs network access, sqv and gpg
 ```
 
-It verifies every published announcement, then checks that these are rejected: tampered text, a valid
-announcement served under another number, a single signature, the same signature twice, a missing key file,
-signers that are not active in the docs, and a new key added only to `keys/`, only to the docs, in place of
-signer_1's file, or under a docs name that points outside `keys/`. A new key added to both places is accepted.
+It verifies every published announcement and checks the progress output, `-q`, a non-signer's unreadable key file
+(still accepted) and a network error while finding the latest (rejected). Then it checks that these are rejected:
+tampered text, a valid announcement served under another number, a single signature, the same signature twice, a
+missing key file, signers that are not active in the docs, and a new key added only to `keys/`, only to the docs,
+in place of signer_1's file, or under a docs name that points outside `keys/`. A new key added to both places is
+accepted.
 `MFVERIFY_BASE` and `MFVERIFY_KEYS_JSON` let the tests serve local files; the signatures are checked the same way.
 
-Tested on macOS (sqv 1.5.0) and Ubuntu 24.04 (sqv 1.1.0, dash).
+Tested on macOS (sqv 1.5.0, with bash and dash as `sh`). Earlier versions were also tested on Ubuntu 24.04 (sqv 1.1.0).
 
 ## TODO
 

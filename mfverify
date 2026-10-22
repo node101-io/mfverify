@@ -2,20 +2,27 @@
 # mfverify: fetch a Monad Foundation node-ops announcement from
 # github.com/monad-crypto/mf-nodeops-comms and verify it with sqv.
 #
-# Usage: mfverify [-v] [N]     (default: the latest announcement; -v: show fingerprints)
+# Usage: mfverify [-q] [-v] [N]   (default: the latest announcement;
+#                                  -q: no progress; -v: show fingerprints)
 #
 # The announcement is printed only if it carries valid signatures from at
 # least two distinct authorized keys and its header names number N. A key is
 # authorized when its file is in the repository's keys/ and its primary-key
 # fingerprint is listed as active in the Foundation's docs, so a key added in
 # only one of the two places does not count.
+#
+# Progress goes to stderr, so that stdout holds only the verified announcement.
 set -eu
 
 BASE=${MFVERIFY_BASE:-https://raw.githubusercontent.com/monad-crypto/mf-nodeops-comms/main}
 KEYS_JSON=${MFVERIFY_KEYS_JSON:-https://docs.monad.xyz/node-ops/gpg-keys.json}
 
-die() { echo "mfverify: $*" >&2; exit 1; }
-usage() { echo "usage: mfverify [-v] [N]" >&2; exit 2; }
+quiet= verbose= open=
+log() { [ -n "$quiet" ] || printf '%s\n' "$*" >&2; }
+step() { [ -n "$quiet" ] || printf '%s... ' "$*" >&2; open=1; }
+result() { open=; log "$*"; }
+die() { [ -z "$open" ] || [ -n "$quiet" ] || echo >&2; echo "mfverify: $*" >&2; exit 1; }
+usage() { echo "usage: mfverify [-q] [-v] [N]" >&2; exit 2; }
 
 # Downloads $1 to $2 and prints "ok", "missing" (HTTP 404, or no such file://
 # file) or "failed: why", so that a network error is never taken for a missing file.
@@ -36,9 +43,8 @@ exists() {
   die "cannot check whether announcement #$1 exists (${s#failed: })"
 }
 
-verbose=
-while getopts vh o; do
-  case $o in v) verbose=1 ;; *) usage ;; esac
+while getopts qvh o; do
+  case $o in q) quiet=1 ;; v) verbose=1 ;; *) usage ;; esac
 done
 shift $((OPTIND - 1))
 [ $# -le 1 ] || usage
@@ -54,6 +60,7 @@ trap 'exit 1' HUP INT TERM
 cd "$tmp"
 
 if [ $# -eq 0 ]; then
+  step "Finding the latest announcement"
   # Announcements are numbered from 0 without gaps: double past the last, then bisect.
   exists 0 || die "no announcements found at $BASE"
   lo=0 hi=1
@@ -63,10 +70,12 @@ if [ $# -eq 0 ]; then
     if exists $m; then lo=$m; else hi=$m; fi
   done
   N=$lo latest=1
+  result "#$N"
 else
   N=$1 latest=
 fi
 
+step "Downloading announcement #$N"
 for f in txt sig; do
   s=$(fetch "$BASE/announcements/mf-$N/announcement.$f" announcement.$f)
   case $s in
@@ -75,7 +84,9 @@ for f in txt sig; do
     *) die "cannot download announcement #$N (${s#failed: })" ;;
   esac
 done
+result "done"
 
+step "Downloading the list of authorized keys from the docs"
 s=$(fetch "$KEYS_JSON" keys.json)
 case $s in
   ok) ;;
@@ -91,29 +102,44 @@ esac
 tr -d ' \t\r\n' < keys.json | tr '}' '\n' | grep '"status":"active"' |
   sed -n 's/.*"\([A-Za-z0-9_-]*\)":{.*"fingerprint":"\([0-9A-F]\{40\}\)".*/\2 \1/p' | tr - _ > active
 [ -s active ] || die "cannot read the authorized keys from $KEYS_JSON"
+result "$(grep -c . active) active"
 
+step "Downloading their key files from GitHub"
 for name in $(cut -d " " -f 2 active | sort -u); do
   fetch "$BASE/keys/$name.pub.asc" "$name.asc" > "$name.status" &
 done
 wait
+result "done"
 
 # Each key is checked on its own, so that a key file sqv cannot read only
 # keeps that key from counting. sqv checks signature, key and certificate
 # expiry and revocation, and prints the fingerprint of each certificate with
 # a valid signature; it must be the one the docs list for that name.
-# A missing key file only means that key cannot count.
+log "Verifying the signatures with sqv:"
 : > valid
 unavailable=
 while read -r fpr name; do
-  case $(cat "$name.status") in
-    ok) ;;
-    missing) continue ;;
-    *) unavailable="$unavailable $name"; continue ;;
+  status=$(cat "$name.status")
+  case $status in
+    ok)
+      if sqv --keyring "$name.asc" announcement.sig announcement.txt > "$name.out" 2> "$name.sqv"; then
+        if grep -qx "$fpr" "$name.out"; then
+          echo "$fpr $name" >> valid
+          why="✓ valid signature"
+        else
+          why="– signed only by another key in keys/$name.pub.asc"
+        fi
+      else
+        # "Missing key" lines name the other signers; anything else says what went wrong.
+        why=$(grep -v '^Missing key' "$name.sqv" | sed 's/^ *//' | tr '\n' ' ' | sed 's/ *$//')
+        why=${why:+"– no valid signature ($why)"}
+        why=${why:-"– did not sign"}
+      fi
+      ;;
+    missing) why="– no key file in keys/" ;;
+    *) why="– key file not downloaded (${status#failed: })" unavailable="$unavailable $name" ;;
   esac
-  if sqv --keyring "$name.asc" announcement.sig announcement.txt > "$name.out" 2> "$name.sqv" &&
-    grep -qx "$fpr" "$name.out"; then
-    echo "$fpr $name" >> valid
-  fi
+  log "  $(printf '%-10s' "$name")${verbose:+ $fpr}  $why"
 done < active
 
 signers=$(sort -u -k 1,1 valid | sort -k 2)
@@ -122,21 +148,25 @@ if [ "$(echo "$signers" | grep -c .)" -lt 2 ]; then
   die "announcement #$N is not signed by 2 distinct authorized keys. Do not act on it."
 fi
 
+step "Checking the header"
 header=$(head -n 1 announcement.txt | tr -d '\r')
 case $header in
-  "MF Announcement #$N" | "Announcement #$N") ;;
+  "MF Announcement #$N" | "Announcement #$N") result "\"$header\"" ;;
   *) die "announcement #$N is signed but its header is \"$header\". Do not act on it." ;;
 esac
 
-echo "✓ Verified #$N ($(echo "$signers" | awk '{ printf "%s%s", s, $2; s = ", " }'))"
-[ -z "$verbose" ] || echo "$signers" | sed 's/^/  /'
 if [ -z "$latest" ]; then
+  step "Checking for newer announcements"
   case $(fetch "$BASE/announcements/mf-$((N + 1))/announcement.txt" probe) in
-    missing) ;;
-    ok) echo "Note: this is not the latest announcement; #$((N + 1)) exists." ;;
-    *) echo "Note: could not check whether announcements newer than #$N exist." ;;
+    missing) result "none"; newer= ;;
+    ok) result "#$((N + 1)) exists"; newer="Note: this is not the latest announcement; #$((N + 1)) exists." ;;
+    *) result "could not check"; newer="Note: could not check whether announcements newer than #$N exist." ;;
   esac
 fi
+
+log
+echo "✓ Verified #$N ($(echo "$signers" | awk '{ printf "%s%s", s, $2; s = ", " }'))"
+[ -z "${newer:-}" ] || echo "$newer"
 echo
 # Drop control characters (terminal escapes) other than tab and newline.
 LC_ALL=C tr -d '\000-\010\013-\037\177' < announcement.txt

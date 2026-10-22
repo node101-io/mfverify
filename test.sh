@@ -60,8 +60,13 @@ d=$t/src/announcements/mf-6
 case_dir 6; accepts_local "local copy of #6" 6
 case_dir 6; for i in 0 1 2 3 4 5; do mkdir "$t/src/announcements/mf-$i"; : > "$t/src/announcements/mf-$i/announcement.txt"; done
 accepts_local "local copy, latest" -v
+head -n 1 "$t/out" | grep -qx '✓ Verified #6 (signer_1, signer_2)' && grep -q '^Verifying the signatures' "$t/err" &&
+  ! grep -q '^Verifying' "$t/out" && pass "progress on stderr, announcement on stdout" || bad "progress on stderr, announcement on stdout"
+case_dir 6; accepts_local "-q" -q 6
+grep -qv '^mfverify: warning:' "$t/err" && bad "-q prints only the override warning" || pass "-q prints only the override warning"
 case_dir 6; printf -- '-----BEGIN PGP PUBLIC KEY BLOCK-----\n\ngarbage\n' >> "$t/src/keys/signer_3.pub.asc"
 accepts_local "a non-signer's key file unreadable" 6
+grep -q 'signer_3.*no valid signature' "$t/err" && pass "unreadable key file reported" || bad "unreadable key file reported"
 case_dir 6; rejects "-v after N" 6 -v
 if MFVERIFY_BASE=http://127.0.0.1:1 ./mfverify >/dev/null 2>&1; then bad "network error finding the latest"; else pass "network error finding the latest"; fi
 
