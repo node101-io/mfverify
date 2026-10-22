@@ -1,0 +1,84 @@
+#!/bin/sh
+# mfverify: fetch a Monad Foundation node-ops announcement from
+# github.com/monad-crypto/mf-nodeops-comms and verify it with sqv.
+#
+# Usage: mfverify [-v] [N]     (default: the latest announcement; -v: show fingerprints)
+#
+# The announcement is printed only if it carries valid signatures from at
+# least two distinct authorized keys and its header names number N. A key is
+# authorized when its file is in the repository's keys/ and its primary-key
+# fingerprint is listed as active in the Foundation's docs, so a key added in
+# only one of the two places does not count.
+set -eu
+
+BASE=${MFVERIFY_BASE:-https://raw.githubusercontent.com/monad-crypto/mf-nodeops-comms/main}
+KEYS_JSON=${MFVERIFY_KEYS_JSON:-https://docs.monad.xyz/node-ops/gpg-keys.json}
+
+die() { echo "mfverify: $*" >&2; exit 1; }
+exists() { curl -fsI -o /dev/null "$BASE/announcements/mf-$1/announcement.txt" 2>/dev/null; }
+
+command -v sqv >/dev/null || die "sqv not found (apt install sqv, or brew install sequoia-sqv)"
+
+verbose=
+[ "${1:-}" != -v ] || { verbose=1; shift; }
+
+if [ $# -eq 0 ]; then
+  # Announcements are numbered from 0 without gaps: double past the last, then bisect.
+  lo=0 hi=1
+  while exists $hi; do lo=$hi hi=$((hi * 2)); done
+  while [ $((hi - lo)) -gt 1 ]; do
+    m=$(((lo + hi) / 2))
+    if exists $m; then lo=$m; else hi=$m; fi
+  done
+  N=$lo
+else
+  N=$1
+fi
+case $N in '' | *[!0-9]*) die "usage: mfverify [-v] [N]" ;; esac
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+cd "$tmp"
+
+for f in txt sig; do
+  curl -fsS -o announcement.$f "$BASE/announcements/mf-$N/announcement.$f" || die "cannot download announcement #$N"
+done
+
+if ! curl -fsS -o keys.json "$KEYS_JSON" 2> err; then
+  # docs.monad.xyz answers bursts of requests with a bot challenge for a while.
+  grep -q 'error: 403' err && die "docs.monad.xyz is blocking automated requests right now (HTTP 403). Try again in a few minutes."
+  die "cannot download $KEYS_JSON: $(cat err)"
+fi
+
+# Active signers as "FINGERPRINT name" lines; "signer-1" has the file keys/signer_1.pub.asc.
+# The JSON is flat, so each "}" ends one signer. Names are restricted so that
+# they cannot point the key download outside keys/.
+tr -d ' \t\r\n' < keys.json | tr '}' '\n' | grep '"status":"active"' |
+  sed -n 's/.*"\([A-Za-z0-9_-]*\)":{.*"fingerprint":"\([0-9A-F]\{40\}\)".*/\2 \1/p' | tr - _ > active
+[ -s active ] || die "cannot read the authorized keys from $KEYS_JSON"
+
+# A missing key file only means that key cannot count.
+for name in $(cut -d ' ' -f 2 active); do
+  curl -fsS "$BASE/keys/$name.pub.asc" >> keys.asc 2>/dev/null || :
+done
+
+# sqv checks signature, key and certificate expiry and revocation, and prints the
+# fingerprint of each certificate with a valid signature. Keep the active ones, once each.
+sqv --keyring keys.asc --signatures 2 announcement.sig announcement.txt > valid ||
+  die "announcement #$N FAILED verification. Do not act on it."
+signers=$(awk 'NR == FNR { name[$1] = $2; next } $1 in name && !seen[$1]++ { print $1, name[$1] }' active valid | sort -k 2)
+[ "$(echo "$signers" | grep -c .)" -ge 2 ] ||
+  die "announcement #$N is not signed by 2 distinct authorized keys. Do not act on it."
+
+header=$(head -n 1 announcement.txt | tr -d '\r')
+case $header in
+  "MF Announcement #$N" | "Announcement #$N") ;;
+  *) die "announcement #$N is signed but its header is \"$header\". Do not act on it." ;;
+esac
+
+echo "✓ Verified #$N ($(echo "$signers" | awk '{ printf "%s%s", s, $2; s = ", " }'))"
+[ -z "$verbose" ] || echo "$signers" | sed 's/^/  /'
+! exists $((N + 1)) || echo "Note: this is not the latest announcement; #$((N + 1)) exists."
+echo
+# Drop control characters (terminal escapes) other than tab and newline.
+LC_ALL=C tr -d '\000-\010\013-\037\177' < announcement.txt
