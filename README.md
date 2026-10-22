@@ -37,8 +37,10 @@ chmod +x mfverify
   certificates.
 - The first line of the text is `MF Announcement #N` (or `Announcement #N`, as in #3) for the requested `N`. This
   stops a validly signed old announcement from being passed off as another one.
-- It notes when the announcement is not the latest one. The latest is found by probing `announcements/mf-N`; a
-  network error while probing stops `mfverify` instead of being taken for "no newer announcement".
+- It notes when the announcement is not the latest one.
+
+A network error is never taken for a missing file (a missing announcement, or no newer one): `mfverify` stops and
+says what failed.
 
 Control characters other than tab and newline are removed before the text is printed.
 
