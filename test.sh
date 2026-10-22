@@ -58,7 +58,10 @@ case_dir() {
 d=$t/src/announcements/mf-6
 
 case_dir 6; accepts_local "local copy of #6" 6
+case_dir 6; for i in 0 1 2 3 4 5; do mkdir "$t/src/announcements/mf-$i"; : > "$t/src/announcements/mf-$i/announcement.txt"; done
+accepts_local "local copy, latest" -v
 case_dir 6; rejects "-v after N" 6 -v
+if MFVERIFY_BASE=http://127.0.0.1:1 ./mfverify >/dev/null 2>&1; then bad "network error finding the latest"; else pass "network error finding the latest"; fi
 
 case_dir 6; sed 's/v0.16.5/v0.16.6/' "$t/real/mf-6/announcement.txt" > "$d/announcement.txt"
 rejects "tampered text" 6

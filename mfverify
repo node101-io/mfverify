@@ -16,7 +16,25 @@ KEYS_JSON=${MFVERIFY_KEYS_JSON:-https://docs.monad.xyz/node-ops/gpg-keys.json}
 
 die() { echo "mfverify: $*" >&2; exit 1; }
 usage() { echo "usage: mfverify [-v] [N]" >&2; exit 2; }
-exists() { curl -fsI -o /dev/null "$BASE/announcements/mf-$1/announcement.txt" 2>/dev/null; }
+
+# Downloads $1 to $2 and prints "ok", "missing" (HTTP 404, or no such file://
+# file) or "failed: why", so that a network error is never taken for a missing file.
+fetch() {
+  code=$(curl -sS --connect-timeout 10 --max-time 60 --retry 2 -o "$2" -w '%{http_code}' "$1" 2> "$2.err") && rc=0 || rc=$?
+  case $rc:$code in
+    0:200 | 0:000) echo ok; return ;;
+    0:404 | 37:*) echo missing ;;
+    0:*) echo "failed: HTTP $code" ;;
+    *) echo "failed: $(sed -n '$s/^curl: ([0-9]*) //p' "$2.err")" ;;
+  esac
+  rm -f "$2"
+}
+# Succeeds if announcement $1 exists and fails if it does not; dies if that cannot be told.
+exists() {
+  s=$(fetch "$BASE/announcements/mf-$1/announcement.txt" probe)
+  case $s in ok) return 0 ;; missing) return 1 ;; esac
+  die "cannot check whether announcement #$1 exists (${s#failed: })"
+}
 
 verbose=
 while getopts vh o; do
@@ -30,33 +48,42 @@ command -v sqv >/dev/null || die "sqv not found (apt install sqv, or brew instal
 [ -z "${MFVERIFY_BASE:-}${MFVERIFY_KEYS_JSON:-}" ] ||
   echo "mfverify: warning: MFVERIFY_BASE or MFVERIFY_KEYS_JSON is set; using $BASE and $KEYS_JSON" >&2
 
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+trap 'exit 1' HUP INT TERM
+cd "$tmp"
+
 if [ $# -eq 0 ]; then
   # Announcements are numbered from 0 without gaps: double past the last, then bisect.
+  exists 0 || die "no announcements found at $BASE"
   lo=0 hi=1
   while exists $hi; do lo=$hi hi=$((hi * 2)); done
   while [ $((hi - lo)) -gt 1 ]; do
     m=$(((lo + hi) / 2))
     if exists $m; then lo=$m; else hi=$m; fi
   done
-  N=$lo
+  N=$lo latest=1
 else
-  N=$1
+  N=$1 latest=
 fi
-
-tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
-trap 'exit 1' HUP INT TERM
-cd "$tmp"
 
 for f in txt sig; do
-  curl -fsS -o announcement.$f "$BASE/announcements/mf-$N/announcement.$f" || die "cannot download announcement #$N"
+  s=$(fetch "$BASE/announcements/mf-$N/announcement.$f" announcement.$f)
+  case $s in
+    ok) ;;
+    missing) die "announcement #$N does not exist (no announcement.$f)" ;;
+    *) die "cannot download announcement #$N (${s#failed: })" ;;
+  esac
 done
 
-if ! curl -fsS -o keys.json "$KEYS_JSON" 2> err; then
+s=$(fetch "$KEYS_JSON" keys.json)
+case $s in
+  ok) ;;
   # docs.monad.xyz answers bursts of requests with a bot challenge for a while.
-  grep -q 'error: 403' err && die "docs.monad.xyz is blocking automated requests right now (HTTP 403). Try again in a few minutes."
-  die "cannot download $KEYS_JSON: $(cat err)"
-fi
+  "failed: HTTP 403") die "docs.monad.xyz is blocking automated requests right now (HTTP 403). Try again in a few minutes." ;;
+  missing) die "cannot download $KEYS_JSON (not found)" ;;
+  *) die "cannot download $KEYS_JSON (${s#failed: })" ;;
+esac
 
 # Active signers as "FINGERPRINT name" lines; "signer-1" has the file keys/signer_1.pub.asc.
 # The JSON is flat, so each "}" ends one signer. Names are restricted so that
@@ -86,7 +113,13 @@ esac
 
 echo "✓ Verified #$N ($(echo "$signers" | awk '{ printf "%s%s", s, $2; s = ", " }'))"
 [ -z "$verbose" ] || echo "$signers" | sed 's/^/  /'
-! exists $((N + 1)) || echo "Note: this is not the latest announcement; #$((N + 1)) exists."
+if [ -z "$latest" ]; then
+  case $(fetch "$BASE/announcements/mf-$((N + 1))/announcement.txt" probe) in
+    missing) ;;
+    ok) echo "Note: this is not the latest announcement; #$((N + 1)) exists." ;;
+    *) echo "Note: could not check whether announcements newer than #$N exist." ;;
+  esac
+fi
 echo
 # Drop control characters (terminal escapes) other than tab and newline.
 LC_ALL=C tr -d '\000-\010\013-\037\177' < announcement.txt
