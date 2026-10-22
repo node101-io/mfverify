@@ -34,7 +34,8 @@ chmod +x mfverify
   fingerprint is listed as `active` in https://docs.monad.xyz/node-ops/gpg-keys.json. This is the Foundation's own
   verification procedure, done on every run. The signatures are checked by
   [sqv](https://gitlab.com/sequoia-pgp/sequoia-sqv), which also rejects expired or revoked signatures, keys and
-  certificates.
+  certificates. Each key is checked on its own, so a key file that is missing or unreadable only keeps that key
+  from counting.
 - The first line of the text is `MF Announcement #N` (or `Announcement #N`, as in #3) for the requested `N`. This
   stops a validly signed old announcement from being passed off as another one.
 - It notes when the announcement is not the latest one.
@@ -68,7 +69,8 @@ then says so and accepts nothing; try again later.
 It verifies every published announcement, then checks that these are rejected: tampered text, a valid
 announcement served under another number, a single signature, the same signature twice, a missing key file,
 signers that are not active in the docs, and a new key added only to `keys/`, only to the docs, in place of
-signer_1's file, or under a docs name that points outside `keys/`. A new key added to both places is accepted.
+signer_1's file, or under a docs name that points outside `keys/`. A new key added to both places is accepted, and
+so is an announcement when a non-signer's key file is unreadable.
 `MFVERIFY_BASE` and `MFVERIFY_KEYS_JSON` let the tests serve local files; the signatures are checked the same way.
 
 Tested on macOS (sqv 1.5.0) and Ubuntu 24.04 (sqv 1.1.0, dash).
