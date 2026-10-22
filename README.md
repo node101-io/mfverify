@@ -68,3 +68,7 @@ signer_1's file, or under a docs name that points outside `keys/`. A new key add
 `MFVERIFY_BASE` and `MFVERIFY_KEYS_JSON` let the tests serve local files; the signatures are checked the same way.
 
 Tested on macOS (sqv 1.5.0) and Ubuntu 24.04 (sqv 1.1.0, dash).
+
+## TODO
+
+- Ask the Monad Foundation to exempt `/node-ops/gpg-keys.json` from the docs site's Vercel bot challenge (see above).
