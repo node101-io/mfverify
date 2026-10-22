@@ -13,10 +13,10 @@ bad() { echo "FAIL  $1"; fail=1; }
 # name, args...
 accepts() { n=$1; shift; if ./mfverify "$@" >/dev/null 2>&1; then pass "$n"; else bad "$n"; fi; }
 # Serves the repository files in $t/src and the docs' key list in $t/src/gpg-keys.json.
-local_run() { MFVERIFY_BASE="file://$t/src" MFVERIFY_KEYS_JSON="file://$t/src/gpg-keys.json" ./mfverify "$1" >/dev/null 2>&1; }
-# name, N
-accepts_local() { if local_run "$2"; then pass "$1"; else bad "$1"; fi; }
-rejects() { if local_run "$2"; then bad "$1"; else pass "$1"; fi; }
+local_run() { MFVERIFY_BASE="file://$t/src" MFVERIFY_KEYS_JSON="file://$t/src/gpg-keys.json" ./mfverify "$@" >"$t/out" 2>"$t/err"; }
+# name, args...
+accepts_local() { n=$1; shift; if local_run "$@"; then pass "$n"; else bad "$n"; fi; }
+rejects() { n=$1; shift; if local_run "$@"; then bad "$n"; else pass "$n"; fi; }
 
 # docs.monad.xyz challenges bursts of requests, so all but one test use one copy of its key list.
 raw=https://raw.githubusercontent.com/monad-crypto/mf-nodeops-comms/main
@@ -60,6 +60,7 @@ case_dir() {
 d=$t/src/announcements/mf-6
 
 case_dir 6; accepts_local "local copy of #6" 6
+case_dir 6; rejects "-v after N" 6 -v
 
 case_dir 6; sed 's/v0.16.5/v0.16.6/' "$t/real/mf-6/announcement.txt" > "$d/announcement.txt"
 rejects "tampered text" 6
