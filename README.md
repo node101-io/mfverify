@@ -15,7 +15,8 @@ MF Announcement #6
 
 `-v` also prints the signers' fingerprints.
 
-The text is printed only if all checks pass. Otherwise `mfverify` prints why and exits with status 1.
+The text is printed only if all checks pass. Otherwise `mfverify` prints why and exits with status 1 (2 for
+invalid arguments).
 
 ## Install
 
