@@ -15,34 +15,31 @@ BASE=${MFVERIFY_BASE:-https://raw.githubusercontent.com/monad-crypto/mf-nodeops-
 KEYS_JSON=${MFVERIFY_KEYS_JSON:-https://docs.monad.xyz/node-ops/gpg-keys.json}
 
 die() { echo "mfverify: $*" >&2; exit 1; }
-usage() { echo "usage: mfverify [-v] [N]" >&2; exit 2; }
+usage() { echo "usage: mfverify [-v] [N]"; exit "$1"; }
 
-# Downloads $1 to $2 and prints "ok", "missing" (HTTP 404, or no such file://
-# file) or "failed: why", so that a network error is never taken for a missing file.
-fetch() {
-  code=$(curl -sS --connect-timeout 10 --max-time 60 --retry 2 -o "$2" -w '%{http_code}' "$1" 2> "$2.err") && rc=0 || rc=$?
+# Downloads $1 to $2. Fails if there is no such file (HTTP 404, or no such
+# file:// file) and dies on any other error, so that a network error is never
+# taken for a missing file.
+get() {
+  code=$(curl -sS --max-time 60 --retry 2 -o "$2" -w '%{http_code}' "$1" 2> err) && rc=0 || rc=$?
   case $rc:$code in
-    0:200 | 0:000) echo ok; return ;;
-    0:404 | 37:*) echo missing ;;
-    0:*) echo "failed: HTTP $code" ;;
-    *) echo "failed: $(sed -n '$s/^curl: ([0-9]*) //p' "$2.err")" ;;
+    0:200 | 0:000) ;;
+    0:404 | 37:*) return 1 ;;
+    # docs.monad.xyz answers bursts of requests with a bot challenge for a while.
+    0:403) die "cannot download $1 (HTTP 403). docs.monad.xyz blocks bursts of requests; try again in a few minutes." ;;
+    0:*) die "cannot download $1 (HTTP $code)" ;;
+    *) die "cannot download $1 ($(sed -n '$s/^curl: ([0-9]*) //p' err))" ;;
   esac
-  rm -f "$2"
 }
-# Succeeds if announcement $1 exists and fails if it does not; dies if that cannot be told.
-exists() {
-  s=$(fetch "$BASE/announcements/mf-$1/announcement.txt" probe)
-  case $s in ok) return 0 ;; missing) return 1 ;; esac
-  die "cannot check whether announcement #$1 exists (${s#failed: })"
-}
+exists() { get "$BASE/announcements/mf-$1/announcement.txt" probe; }
 
 verbose=
 while getopts vh o; do
-  case $o in v) verbose=1 ;; *) usage ;; esac
+  case $o in v) verbose=1 ;; h) usage 0 ;; *) usage 2 >&2 ;; esac
 done
 shift $((OPTIND - 1))
-[ $# -le 1 ] || usage
-case ${1-0} in '' | *[!0-9]* | 0?*) usage ;; esac
+[ $# -le 1 ] || usage 2 >&2
+case ${1-0} in '' | *[!0-9]* | 0?*) usage 2 >&2 ;; esac
 
 command -v sqv >/dev/null || die "sqv not found (apt install sqv, or brew install sequoia-sqv)"
 [ -z "${MFVERIFY_BASE:-}${MFVERIFY_KEYS_JSON:-}" ] ||
@@ -55,35 +52,21 @@ cd "$tmp"
 
 if [ $# -eq 0 ]; then
   # Announcements are numbered from 0 without gaps: double past the last, then bisect.
-  exists 0 || die "no announcements found at $BASE"
   lo=0 hi=1
   while exists $hi; do lo=$hi hi=$((hi * 2)); done
   while [ $((hi - lo)) -gt 1 ]; do
     m=$(((lo + hi) / 2))
     if exists $m; then lo=$m; else hi=$m; fi
   done
-  N=$lo latest=1
+  N=$lo
 else
-  N=$1 latest=
+  N=$1
 fi
 
 for f in txt sig; do
-  s=$(fetch "$BASE/announcements/mf-$N/announcement.$f" announcement.$f)
-  case $s in
-    ok) ;;
-    missing) die "announcement #$N does not exist (no announcement.$f)" ;;
-    *) die "cannot download announcement #$N (${s#failed: })" ;;
-  esac
+  get "$BASE/announcements/mf-$N/announcement.$f" announcement.$f || die "announcement #$N does not exist"
 done
-
-s=$(fetch "$KEYS_JSON" keys.json)
-case $s in
-  ok) ;;
-  # docs.monad.xyz answers bursts of requests with a bot challenge for a while.
-  "failed: HTTP 403") die "docs.monad.xyz is blocking automated requests right now (HTTP 403). Try again in a few minutes." ;;
-  missing) die "cannot download $KEYS_JSON (not found)" ;;
-  *) die "cannot download $KEYS_JSON (${s#failed: })" ;;
-esac
+get "$KEYS_JSON" keys.json || die "cannot download $KEYS_JSON (not found)"
 
 # Active signers as "FINGERPRINT name" lines; "signer-1" has the file keys/signer_1.pub.asc.
 # The JSON is flat, so each "}" ends one signer. Names are restricted so that
@@ -92,35 +75,18 @@ tr -d ' \t\r\n' < keys.json | tr '}' '\n' | grep '"status":"active"' |
   sed -n 's/.*"\([A-Za-z0-9_-]*\)":{.*"fingerprint":"\([0-9A-F]\{40\}\)".*/\2 \1/p' | tr - _ > active
 [ -s active ] || die "cannot read the authorized keys from $KEYS_JSON"
 
-for name in $(cut -d " " -f 2 active | sort -u); do
-  fetch "$BASE/keys/$name.pub.asc" "$name.asc" > "$name.status" &
-done
-wait
-
-# Each key is checked on its own, so that a key file sqv cannot read only
-# keeps that key from counting. sqv checks signature, key and certificate
-# expiry and revocation, and prints the fingerprint of each certificate with
-# a valid signature; it must be the one the docs list for that name.
 # A missing key file only means that key cannot count.
-: > valid
-unavailable=
-while read -r fpr name; do
-  case $(cat "$name.status") in
-    ok) ;;
-    missing) continue ;;
-    *) unavailable="$unavailable $name"; continue ;;
-  esac
-  if sqv --keyring "$name.asc" announcement.sig announcement.txt > "$name.out" 2> "$name.sqv" &&
-    grep -qx "$fpr" "$name.out"; then
-    echo "$fpr $name" >> valid
-  fi
-done < active
+for name in $(cut -d ' ' -f 2 active); do
+  ! get "$BASE/keys/$name.pub.asc" key || cat key >> keys.asc
+done
 
-signers=$(sort -u -k 1,1 valid | sort -k 2)
-if [ "$(echo "$signers" | grep -c .)" -lt 2 ]; then
-  [ -z "$unavailable" ] || die "announcement #$N could not be verified: the key files of$unavailable could not be downloaded. Check your network and try again; do not act on it until it verifies."
+# sqv checks signature, key and certificate expiry and revocation, and prints the
+# fingerprint of each certificate with a valid signature. Keep the active ones, once each.
+sqv --keyring keys.asc --signatures 2 announcement.sig announcement.txt > valid ||
+  die "announcement #$N FAILED verification. Do not act on it."
+signers=$(awk 'NR == FNR { name[$1] = $2; next } $1 in name && !seen[$1]++ { print $1, name[$1] }' active valid | sort -k 2)
+[ "$(echo "$signers" | grep -c .)" -ge 2 ] ||
   die "announcement #$N is not signed by 2 distinct authorized keys. Do not act on it."
-fi
 
 header=$(head -n 1 announcement.txt | tr -d '\r')
 case $header in
@@ -128,15 +94,13 @@ case $header in
   *) die "announcement #$N is signed but its header is \"$header\". Do not act on it." ;;
 esac
 
+# Checked before anything is printed, so that a network error does not cut the output short.
+newer=
+! exists $((N + 1)) || newer="Note: this is not the latest announcement; #$((N + 1)) exists."
+
 echo "✓ Verified #$N ($(echo "$signers" | awk '{ printf "%s%s", s, $2; s = ", " }'))"
 [ -z "$verbose" ] || echo "$signers" | sed 's/^/  /'
-if [ -z "$latest" ]; then
-  case $(fetch "$BASE/announcements/mf-$((N + 1))/announcement.txt" probe) in
-    missing) ;;
-    ok) echo "Note: this is not the latest announcement; #$((N + 1)) exists." ;;
-    *) echo "Note: could not check whether announcements newer than #$N exist." ;;
-  esac
-fi
+[ -z "$newer" ] || echo "$newer"
 echo
 # Drop control characters (terminal escapes) other than tab and newline.
 LC_ALL=C tr -d '\000-\010\013-\037\177' < announcement.txt
