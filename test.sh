@@ -4,7 +4,9 @@ set -u
 cd "$(dirname "$0")"
 
 t=$(mktemp -d)
-trap 'rm -rf "$t"' EXIT
+# Set before the trap, so that it only ever stops the tests' own gpg-agent.
+export GNUPGHOME="$t/gnupg"; mkdir -m 700 "$GNUPGHOME"
+trap 'gpgconf --kill gpg-agent 2>/dev/null; rm -rf "$t"' EXIT
 fail=0
 pass() { echo "ok    $1"; }
 bad() { echo "FAIL  $1"; fail=1; }
@@ -16,25 +18,32 @@ local_run() { MFVERIFY_BASE="file://$t/src" MFVERIFY_KEYS_JSON="file://$t/src/gp
 accepts_local() { if local_run "$2"; then pass "$1"; else bad "$1"; fi; }
 rejects() { if local_run "$2"; then bad "$1"; else pass "$1"; fi; }
 
+# docs.monad.xyz challenges bursts of requests, so all but one test use one copy of its key list.
+raw=https://raw.githubusercontent.com/monad-crypto/mf-nodeops-comms/main
+mkdir -p "$t/real/keys"
+curl -fsS -o "$t/real/gpg-keys.json" https://docs.monad.xyz/node-ops/gpg-keys.json ||
+  { echo "cannot download the key list from docs.monad.xyz; try again in a few minutes"; exit 1; }
+
 # The latest announcement, end to end.
 accepts "latest"
 
-# Every published announcement. docs.monad.xyz challenges bursts of requests,
-# so the rest of the tests use one copy of its key list.
-mkdir -p "$t/real/keys"
-curl -fsS -o "$t/real/gpg-keys.json" https://docs.monad.xyz/node-ops/gpg-keys.json
-for n in 0 1 2 3 4 5 6; do
+# Every published announcement.
+n=0
+while curl -fsI -o /dev/null "$raw/announcements/mf-$n/announcement.txt"; do
   if MFVERIFY_KEYS_JSON="file://$t/real/gpg-keys.json" ./mfverify $n >/dev/null 2>&1; then pass "#$n"; else bad "#$n"; fi
+  n=$((n + 1))
 done
+[ $n -gt 6 ] || bad "found only $n announcements"
 
 # Real files to tamper with.
-raw=https://raw.githubusercontent.com/monad-crypto/mf-nodeops-comms/main
 for n in 5 6; do
   mkdir -p "$t/real/mf-$n"
   curl -fsS -o "$t/real/mf-$n/announcement.txt" "$raw/announcements/mf-$n/announcement.txt"
   curl -fsS -o "$t/real/mf-$n/announcement.sig" "$raw/announcements/mf-$n/announcement.sig"
 done
-for k in 1 2 3 4 6; do curl -fsS -o "$t/real/keys/signer_$k.pub.asc" "$raw/keys/signer_$k.pub.asc"; done
+for k in $(sed -n 's/^ *"\([A-Za-z0-9_-]*\)": *{.*/\1/p' "$t/real/gpg-keys.json" | tr - _); do
+  curl -fsS -o "$t/real/keys/$k.pub.asc" "$raw/keys/$k.pub.asc" || bad "download keys/$k.pub.asc"
+done
 # mf-6's signature holds two packets, by signer_1 and signer_2; split them.
 gpg --dearmor < "$t/real/mf-6/announcement.sig" > "$t/sig.bin"
 len=$(gpg --list-packets "$t/sig.bin" 2>/dev/null | sed -n 's/^# off=0 .*hlen=\([0-9]*\) plen=\([0-9]*\).*/\1 \2/p')
@@ -74,7 +83,6 @@ case_dir 6; sed 's/"active"/"revoked"/' "$t/real/gpg-keys.json" > "$t/src/gpg-ke
 rejects "signers not active in the docs" 6
 
 # A new key, signing together with signer_2.
-export GNUPGHOME="$t/gnupg"; mkdir -m 700 "$GNUPGHOME"
 gpg -q --batch --passphrase '' --quick-gen-key new ed25519 sign never 2>/dev/null
 gpg -q --batch --detach-sign -o "$t/new.sig" "$t/real/mf-6/announcement.txt"
 fpr=$(gpg --with-colons --list-keys new 2>/dev/null | awk -F: '$1 == "fpr" { print $10; exit }')
