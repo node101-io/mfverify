@@ -7,13 +7,20 @@ the manual steps (import the keys, compare fingerprints, run `gpg --verify`, cou
 ```console
 $ mfverify        # the latest announcement
 $ mfverify 6      # announcement #6
+Checking the signatures on #6:
+  signer_1   ✓ valid signature
+  signer_2   ✓ valid signature
+  signer_3   – no valid signature
+  signer_4   – no valid signature
+  signer_6   – no valid signature
 ✓ Verified #6 (signer_1, signer_2)
 
 MF Announcement #6
 ...
 ```
 
-`-v` also prints the signers' fingerprints.
+The progress goes to stderr, so stdout holds only the verified announcement. `-q` hides the progress, and `-v` also
+prints the signers' fingerprints.
 
 The text is printed only if all checks pass. Otherwise `mfverify` prints why and exits with status 1 (2 for
 invalid arguments).
@@ -66,7 +73,7 @@ then says so and accepts nothing; try again later.
 ./test.sh    # needs network access, sqv and gpg
 ```
 
-It verifies every published announcement, then checks that these are rejected: tampered text, a valid
+It verifies every published announcement and checks the progress output and `-q`, then checks that these are rejected: tampered text, a valid
 announcement served under another number, a single signature, the same signature twice, a missing key file,
 signers that are not active in the docs, and a new key added only to `keys/`, only to the docs, in place of
 signer_1's file, or under a docs name that points outside `keys/`. A new key added to both places is accepted, and
